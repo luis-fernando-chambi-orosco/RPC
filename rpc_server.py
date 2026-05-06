@@ -1,15 +1,19 @@
 import amqpstorm
 from amqpstorm import Message
 
+# --- CONFIGURACIÓN DE CLOUDAMQP ---
+# USA LA MISMA URL QUE PUSISTE EN APP.PY
+CLOUDAMQP_URL = 'amqps://qyrkkzaa:UEt7Rh0kvsoHt-BOJzGGLcq02XDNxv0x@duck.lmq.cloudamqp.com/qyrkkzaa'
 
 def on_request(message):
     """Procesar solicitudes RPC."""
-
     try:
-        print(f"[Servidor RPC] Recibido: {message.body}")
+        # Decodificar el cuerpo si viene como bytes
+        body = message.body
+        print(f"[Servidor RPC] Recibido: {body}")
 
         # Simulación de procesamiento
-        response = f"Hola, recibí tu mensaje: {message.body}"
+        response = f"Hola, recibí tu mensaje: {body}"
 
         # Crear respuesta
         response_message = Message.create(
@@ -17,44 +21,38 @@ def on_request(message):
             response
         )
 
-        # Mantener relación request-response
+        # Mantener relación request-response (IMPORTANTE)
         response_message.correlation_id = message.correlation_id
 
-        # Cola callback del cliente
-        response_message.reply_to = message.reply_to
-
-        # Enviar respuesta
+        # Enviar respuesta a la cola que nos indicó el cliente
         response_message.publish(
             routing_key=message.reply_to
         )
 
         print(f"[Servidor RPC] Respuesta enviada.")
 
-        # Confirmar mensaje procesado
+        # Confirmar mensaje procesado (Ack)
         message.ack()
 
     except Exception as e:
         print(f"[Servidor RPC] Error procesando solicitud: {e}")
 
-
 def main():
-
     try:
-        connection = amqpstorm.Connection(
-            'localhost',
-            'guest',
-            'guest'
-        )
-
+        # CAMBIO CLAVE: Usamos la URL de la nube y UriConnection
+        connection = amqpstorm.UriConnection(CLOUDAMQP_URL)
         channel = connection.channel()
 
-        # Cola RPC principal
+        # Cola RPC principal (debe coincidir con la del cliente)
         channel.queue.declare(
             queue='rpc_queue',
             durable=True
         )
 
-        print("[Servidor RPC] Esperando solicitudes...")
+        # Prefetch 1: No envíes más de un mensaje a la vez a este worker
+        channel.basic.qos(1)
+
+        print("[Servidor RPC] Esperando solicitudes en la nube...")
 
         channel.basic.consume(
             on_request,
@@ -65,7 +63,8 @@ def main():
 
     except Exception as e:
         print(f"[Servidor RPC] Error de conexión: {e}")
-
+    except KeyboardInterrupt:
+        print("[Servidor RPC] Detenido por el usuario.")
 
 if __name__ == "__main__":
     main()

@@ -6,14 +6,16 @@ from amqpstorm import Message
 
 app = Flask(__name__)
 
-class RpcClient(object):
-    """Asynchronous RPC Client."""
+# --- CONFIGURACIÓN DE CLOUDAMQP ---
+# REEMPLAZA ESTA URL con la que copiaste de tu instancia "RPC" en CloudAMQP
+CLOUDAMQP_URL = 'amqps://qyrkkzaa:UEt7Rh0kvsoHt-BOJzGGLcq02XDNxv0x@duck.lmq.cloudamqp.com/qyrkkzaa'
 
-    def __init__(self, host, username, password, rpc_queue):
+class RpcClient(object):
+    """Asynchronous RPC Client compatible con la nube."""
+
+    def __init__(self, amqp_url, rpc_queue):
         self.queue = {}
-        self.host = host
-        self.username = username
-        self.password = password
+        self.url = amqp_url
         self.channel = None
         self.connection = None
         self.callback_queue = None
@@ -21,19 +23,14 @@ class RpcClient(object):
 
         try:
             self.open()
-            print("[Cliente RPC] Conexión establecida correctamente.")
-
+            print("[Cliente RPC] Conexión establecida con CloudAMQP correctamente.")
         except Exception as e:
             print(f"[Cliente RPC] Error al conectar: {e}")
 
     def open(self):
-        """Open RabbitMQ connection."""
-        self.connection = amqpstorm.Connection(
-            self.host,
-            self.username,
-            self.password
-        )
-
+        """Abre la conexión usando la URL (UriConnection)."""
+        # CAMBIO CLAVE: Usamos UriConnection para la nube
+        self.connection = amqpstorm.UriConnection(self.url)
         self.channel = self.connection.channel()
 
         # Cola principal RPC
@@ -56,101 +53,68 @@ class RpcClient(object):
         self._create_process_thread()
 
     def _create_process_thread(self):
-        """Create thread for consuming RPC responses."""
         thread = threading.Thread(target=self._process_data_events)
         thread.daemon = True
         thread.start()
 
     def _process_data_events(self):
-        """Consume incoming responses."""
         try:
             self.channel.start_consuming(to_tuple=False)
-
         except Exception as e:
             print(f"[Cliente RPC] Error consumiendo mensajes: {e}")
 
     def _on_response(self, message):
-        """Callback executed when a response arrives."""
         self.queue[message.correlation_id] = message.body
 
     def send_request(self, payload):
-        """Send RPC request."""
         try:
             message = Message.create(self.channel, payload)
-
             message.reply_to = self.callback_queue
-
-            # Guardamos solicitud pendiente
             self.queue[message.correlation_id] = None
-
             message.publish(routing_key=self.rpc_queue)
-
             return message.correlation_id
-
         except Exception as e:
             print(f"[Cliente RPC] Error enviando solicitud: {e}")
             return None
 
     def has_response(self, correlation_id):
-        """Check if response exists."""
         return self.queue.get(correlation_id) is not None
 
     def get_response(self, correlation_id):
-        """Retrieve and clean response."""
         response = self.queue.get(correlation_id)
-
-        # Limpiar memoria
         if correlation_id in self.queue:
             del self.queue[correlation_id]
-
         return response
 
+# Inicializar cliente globalmente para que Flask lo use
+# Nota: rpc_queue debe ser el mismo nombre que use el rpc_server.py
+RPC_CLIENT = RpcClient(CLOUDAMQP_URL, 'rpc_queue')
 
 @app.route('/', methods=['GET', 'POST'])
 def index():
-
     respuesta = None
-
     if request.method == 'POST':
-
         try:
             mensaje = request.form['mensaje']
-
             corr_id = RPC_CLIENT.send_request(mensaje)
 
             if corr_id is None:
                 respuesta = "No se pudo enviar la solicitud RPC."
-
             else:
                 timeout = 10
                 elapsed = 0
-
                 while not RPC_CLIENT.has_response(corr_id):
-
                     sleep(0.1)
                     elapsed += 0.1
-
-                    # Timeout
                     if elapsed >= timeout:
                         respuesta = "Timeout: el servidor RPC no respondió."
                         break
-
                 else:
                     respuesta = RPC_CLIENT.get_response(corr_id)
-
         except Exception as e:
             respuesta = f"Error de conexión RPC: {str(e)}"
 
     return render_template('index.html', respuesta=respuesta)
 
-
 if __name__ == '__main__':
-
-    RPC_CLIENT = RpcClient(
-        '127.0.0.1',
-        'guest',
-        'guest',
-        'rpc_queue'
-    )
-
     app.run(debug=True)
