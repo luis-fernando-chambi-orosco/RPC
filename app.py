@@ -101,7 +101,7 @@ def index():
             if corr_id is None:
                 respuesta = "No se pudo enviar la solicitud RPC."
             else:
-                timeout = 30
+                timeout = 60
                 elapsed = 0
                 while not RPC_CLIENT.has_response(corr_id):
                     sleep(0.1)
