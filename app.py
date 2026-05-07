@@ -1,5 +1,5 @@
 import threading
-import os  # Necesario para leer el puerto de Railway
+import os
 from time import sleep
 from flask import Flask, render_template, request
 import amqpstorm
@@ -8,12 +8,9 @@ from amqpstorm import Message
 app = Flask(__name__)
 
 # --- CONFIGURACIÓN DE CLOUDAMQP ---
-# Lee la URL de la variable de entorno de Railway, si no existe, usa la fija
 CLOUDAMQP_URL = os.environ.get('CLOUDAMQP_URL', 'amqps://qyrkkzaa:UEt7Rh0kvsoHt-BOJzGGLcq02XDNxv0x@duck.lmq.cloudamqp.com/qyrkkzaa')
 
 class RpcClient(object):
-    """Asynchronous RPC Client compatible con la nube."""
-
     def __init__(self, amqp_url, rpc_queue):
         self.queue = {}
         self.url = amqp_url
@@ -21,35 +18,15 @@ class RpcClient(object):
         self.connection = None
         self.callback_queue = None
         self.rpc_queue = rpc_queue
-
-        try:
-            self.open()
-            print("[Cliente RPC] Conexión establecida con CloudAMQP correctamente.")
-        except Exception as e:
-            print(f"[Cliente RPC] Error al conectar: {e}")
+        self.open()
 
     def open(self):
-        """Abre la conexión usando la URL (UriConnection)."""
         self.connection = amqpstorm.UriConnection(self.url)
         self.channel = self.connection.channel()
-
-        # Cola principal RPC
-        self.channel.queue.declare(
-            queue=self.rpc_queue,
-            durable=True
-        )
-
-        # Cola exclusiva de callback
+        self.channel.queue.declare(queue=self.rpc_queue, durable=True)
         result = self.channel.queue.declare(exclusive=True)
         self.callback_queue = result['queue']
-
-        # Consumidor de respuestas
-        self.channel.basic.consume(
-            self._on_response,
-            no_ack=True,
-            queue=self.callback_queue
-        )
-
+        self.channel.basic.consume(self._on_response, no_ack=True, queue=self.callback_queue)
         self._create_process_thread()
 
     def _create_process_thread(self):
@@ -60,22 +37,18 @@ class RpcClient(object):
     def _process_data_events(self):
         try:
             self.channel.start_consuming(to_tuple=False)
-        except Exception as e:
-            print(f"[Cliente RPC] Error consumiendo mensajes: {e}")
+        except Exception:
+            pass
 
     def _on_response(self, message):
         self.queue[message.correlation_id] = message.body
 
     def send_request(self, payload):
-        try:
-            message = Message.create(self.channel, payload)
-            message.reply_to = self.callback_queue
-            self.queue[message.correlation_id] = None
-            message.publish(routing_key=self.rpc_queue)
-            return message.correlation_id
-        except Exception as e:
-            print(f"[Cliente RPC] Error enviando solicitud: {e}")
-            return None
+        message = Message.create(self.channel, payload)
+        message.reply_to = self.callback_queue
+        self.queue[message.correlation_id] = None
+        message.publish(routing_key=self.rpc_queue)
+        return message.correlation_id
 
     def has_response(self, correlation_id):
         return self.queue.get(correlation_id) is not None
@@ -86,38 +59,41 @@ class RpcClient(object):
             del self.queue[correlation_id]
         return response
 
-# Inicializar cliente globalmente
-RPC_CLIENT = RpcClient(CLOUDAMQP_URL, 'rpc_queue')
+# Inicialización segura del cliente
+RPC_CLIENT = None
+
+def get_rpc_client():
+    global RPC_CLIENT
+    if RPC_CLIENT is None:
+        RPC_CLIENT = RpcClient(CLOUDAMQP_URL, 'rpc_queue')
+    return RPC_CLIENT
 
 @app.route('/', methods=['GET', 'POST'])
 def index():
     respuesta = None
     if request.method == 'POST':
         try:
+            client = get_rpc_client()
             mensaje = request.form['mensaje']
-            corr_id = RPC_CLIENT.send_request(mensaje)
+            corr_id = client.send_request(mensaje)
 
-            if corr_id is None:
-                respuesta = "No se pudo enviar la solicitud RPC."
+            timeout = 60
+            elapsed = 0
+            while not client.has_response(corr_id):
+                sleep(0.1)
+                elapsed += 0.1
+                if elapsed >= timeout:
+                    respuesta = "Timeout: el servidor RPC no respondió."
+                    break
             else:
-                timeout = 60
-                elapsed = 0
-                while not RPC_CLIENT.has_response(corr_id):
-                    sleep(0.1)
-                    elapsed += 0.1
-                    if elapsed >= timeout:
-                        respuesta = "Timeout: el servidor RPC no respondió."
-                        break
-                else:
-                    respuesta = RPC_CLIENT.get_response(corr_id)
+                respuesta = client.get_response(corr_id)
         except Exception as e:
-            respuesta = f"Error de conexión RPC: {str(e)}"
-
+            respuesta = f"Error: {str(e)}"
     return render_template('index.html', respuesta=respuesta)
 
-# --- CAMBIO CRUCIAL PARA RAILWAY/NUBE ---
+# --- CONFIGURACIÓN FINAL PARA RAILWAY ---
 if __name__ == '__main__':
-    # Railway inyecta la variable PORT, si no existe usamos 5000 por defecto
-    port = int(os.environ.get("PORT", 5000))
-    # host='0.0.0.0' permite que el servidor reciba conexiones externas
-    app.run(host='0.0.0.0', port=port, debug=False)
+    # Usamos puerto 8080 por defecto para Railway
+    port = int(os.environ.get("PORT", 8080))
+    # Importante: host 0.0.0.0 y debug False para evitar el error de respuesta
+    app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
