@@ -4,7 +4,6 @@ from amqpstorm import Message
 # --- CONFIGURACIÓN DE CLOUDAMQP ---
 # USA LA MISMA URL QUE PUSISTE EN APP.PY
 CLOUDAMQP_URL = 'amqps://qyrkkzaa:UEt7Rh0kvsoHt-BOJzGGLcq02XDNxv0x@duck.lmq.cloudamqp.com/qyrkkzaa'
-
 def on_request(message):
     """Procesar solicitudes RPC."""
     try:
