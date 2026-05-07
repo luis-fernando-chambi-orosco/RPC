@@ -1,4 +1,5 @@
 import threading
+import os  # Necesario para leer el puerto de Railway
 from time import sleep
 from flask import Flask, render_template, request
 import amqpstorm
@@ -7,8 +8,8 @@ from amqpstorm import Message
 app = Flask(__name__)
 
 # --- CONFIGURACIÓN DE CLOUDAMQP ---
-# REEMPLAZA ESTA URL con la que copiaste de tu instancia "RPC" en CloudAMQP
-CLOUDAMQP_URL = 'amqps://qyrkkzaa:UEt7Rh0kvsoHt-BOJzGGLcq02XDNxv0x@duck.lmq.cloudamqp.com/qyrkkzaa'
+# Lee la URL de la variable de entorno de Railway, si no existe, usa la fija
+CLOUDAMQP_URL = os.environ.get('CLOUDAMQP_URL', 'amqps://qyrkkzaa:UEt7Rh0kvsoHt-BOJzGGLcq02XDNxv0x@duck.lmq.cloudamqp.com/qyrkkzaa')
 
 class RpcClient(object):
     """Asynchronous RPC Client compatible con la nube."""
@@ -29,7 +30,6 @@ class RpcClient(object):
 
     def open(self):
         """Abre la conexión usando la URL (UriConnection)."""
-        # CAMBIO CLAVE: Usamos UriConnection para la nube
         self.connection = amqpstorm.UriConnection(self.url)
         self.channel = self.connection.channel()
 
@@ -86,8 +86,7 @@ class RpcClient(object):
             del self.queue[correlation_id]
         return response
 
-# Inicializar cliente globalmente para que Flask lo use
-# Nota: rpc_queue debe ser el mismo nombre que use el rpc_server.py
+# Inicializar cliente globalmente
 RPC_CLIENT = RpcClient(CLOUDAMQP_URL, 'rpc_queue')
 
 @app.route('/', methods=['GET', 'POST'])
@@ -116,5 +115,9 @@ def index():
 
     return render_template('index.html', respuesta=respuesta)
 
+# --- CAMBIO CRUCIAL PARA RAILWAY/NUBE ---
 if __name__ == '__main__':
-    app.run(debug=True)
+    # Railway inyecta la variable PORT, si no existe usamos 5000 por defecto
+    port = int(os.environ.get("PORT", 5000))
+    # host='0.0.0.0' permite que el servidor reciba conexiones externas
+    app.run(host='0.0.0.0', port=port, debug=False)
